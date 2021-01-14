@@ -243,7 +243,7 @@ sub _signal_handler {
     $oldsig_cb = $oldsig;
   } elsif(
     defined $oldsig and
-    $oldsig ne 'DEFAULT' and 
+    $oldsig ne 'DEFAULT' and # SIGCHLD default is ignore
     $oldsig ne 'IGNORE' and 
     defined &$oldsig
   ) {
@@ -260,19 +260,17 @@ sub _watch_pid {
   my ($self, $pid) = @_;
   my $reactor = $self->ioloop->reactor;
 
-  # wrap any existing handler for SIGCHLD for tha case
+  # wrap any existing handler for SIGCHLD for cases 
   # like as Minion::Command::minion::worker
   # where SIGCHLD is set up for manual waitpid() checks.
   # See https://github.com/kraih/minion/issues/15 and
   # https://github.com/jhthorsen/mojo-ioloop-readwritefork/issues/9
   # for details.
   if ($reactor->isa('Mojo::Reactor::EV')) {
-    # wait for child event
     $self->{ev_child} = EV::child($pid, 0, _signal_handler(CHLD => sub { _sigchld($self, $pid, $_[0]->rstatus); }));
   }
   else {
-    # wait for child signal
-    $reactor->{fork_watcher} ||= $self->_sigchld_listener(sub { _watch_forks($reactor) });;
+    $reactor->{fork_watcher} ||= $self->_sigchld_listener(sub { _watch_forks($reactor) });
     Scalar::Util::weaken($reactor->{forks}{$pid} = $self);
   }
 }
