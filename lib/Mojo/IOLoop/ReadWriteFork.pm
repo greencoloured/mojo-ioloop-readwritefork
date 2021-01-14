@@ -1,5 +1,6 @@
 package Mojo::IOLoop::ReadWriteFork;
 use Mojo::Base 'Mojo::EventEmitter';
+# vim: expandtab:ts=2:sw=2
 
 use Errno qw(EAGAIN ECONNRESET EINTR EPIPE EWOULDBLOCK);
 use IO::Pty;
@@ -10,7 +11,6 @@ use Scalar::Util ();
 
 use constant CHUNK_SIZE        => $ENV{MOJO_CHUNK_SIZE}           || 131072;
 use constant DEBUG             => $ENV{MOJO_READWRITE_FORK_DEBUG} || $ENV{MOJO_READWRITEFORK_DEBUG} || 0;
-use constant WAIT_PID_INTERVAL => $ENV{WAIT_PID_INTERVAL}         || 0.01;
 
 my %ESC = ("\0" => '\0', "\a" => '\a', "\b" => '\b', "\f" => '\f', "\n" => '\n', "\r" => '\r', "\t" => '\t');
 
@@ -209,6 +209,22 @@ sub _read {
   $self->emit(read => $buffer);
 }
 
+
+sub _sigchld_listener {
+  my ($self, $cb) = @_;
+  pipe my $read, my $write;
+  $write->autoflush(1);
+  my $stream = Mojo::IOLoop::Stream->new($read)->timeout(0);
+  $stream->on(read => $cb);
+  $stream->start;
+  $SIG{CHLD} = _signal_handler(CHLD => sub {
+    Mojo::IOLoop->timer(0 => sub {
+      syswrite $write, "1" or warn "failed to trigger SIGCHLD: $!";
+    });
+  });
+  return $stream;
+}
+
 sub _sigchld {
   my $self = shift;
   my ($exit_value, $signal) = ($_[1] >> 8, $_[1] & 127);
@@ -219,21 +235,45 @@ sub _sigchld {
   $self->emit(close => $exit_value, $signal);
 }
 
+sub _signal_handler {
+  my ($sig, $cb) = @_;
+  my $handler = $SIG{$sig};
+  my $handler_cb;
+  if (ref $handler eq 'CODE') {
+    $handler_cb = $handler;
+  } elsif(
+    defined $handler and
+    $handler ne 'DEFAULT' and 
+    $handler ne 'IGNORE' and 
+    defined &$handler
+  ) {
+    no strict 'refs';
+    $handler_cb = \&$handler if defined &$handler;
+  }
+  return $handler_cb ? sub {
+    $cb->(@_);
+    $handler_cb->(@_);
+  } : $cb;
+}
+
 sub _watch_pid {
   my ($self, $pid) = @_;
   my $reactor = $self->ioloop->reactor;
 
-  # The CHLD test is for code, such as Minion::Command::minion::worker
+  # wrap any existing handler for SIGCHLD for tha case
+  # like as Minion::Command::minion::worker
   # where SIGCHLD is set up for manual waitpid() checks.
   # See https://github.com/kraih/minion/issues/15 and
   # https://github.com/jhthorsen/mojo-ioloop-readwritefork/issues/9
   # for details.
-  if ($SIG{CHLD} or !$reactor->isa('Mojo::Reactor::EV')) {
-    $reactor->{fork_watcher} ||= $reactor->recurring(WAIT_PID_INTERVAL, \&_watch_forks);
-    Scalar::Util::weaken($reactor->{forks}{$pid} = $self);
+  if ($reactor->isa('Mojo::Reactor::EV')) {
+    # wait for child event
+    $self->{ev_child} = EV::child($pid, 0, _signal_handler(CHLD => sub { _sigchld($self, $pid, $_[0]->rstatus); }));
   }
   else {
-    $self->{ev_child} = EV::child($pid, 0, sub { _sigchld($self, $pid, $_[0]->rstatus); });
+    # wait for child signal
+    $reactor->{fork_watcher} ||= $self->_sigchld_listener(sub { _watch_forks($reactor) });;
+    Scalar::Util::weaken($reactor->{forks}{$pid} = $self);
   }
 }
 
