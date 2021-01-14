@@ -237,22 +237,22 @@ sub _sigchld {
 
 sub _signal_handler {
   my ($sig, $cb) = @_;
-  my $handler = $SIG{$sig};
-  my $handler_cb;
-  if (ref $handler eq 'CODE') {
-    $handler_cb = $handler;
+  my $oldsig = $SIG{$sig};
+  my $oldsig_cb;
+  if (ref $oldsig eq 'CODE') {
+    $oldsig_cb = $oldsig;
   } elsif(
-    defined $handler and
-    $handler ne 'DEFAULT' and 
-    $handler ne 'IGNORE' and 
-    defined &$handler
+    defined $oldsig and
+    $oldsig ne 'DEFAULT' and 
+    $oldsig ne 'IGNORE' and 
+    defined &$oldsig
   ) {
     no strict 'refs';
-    $handler_cb = \&$handler if defined &$handler;
+    $oldsig_cb = \&$oldsig if defined &$oldsig;
   }
-  return $handler_cb ? sub {
+  return $oldsig_cb ? sub {
     $cb->(@_);
-    $handler_cb->(@_);
+    $oldsig_cb->(@_);
   } : $cb;
 }
 
