@@ -211,13 +211,13 @@ sub _read {
 
 
 sub _sigchld_listener {
-  my ($self, $cb) = @_;
+  my $cb = shift;
   pipe my $read, my $write;
   $write->autoflush(1);
   my $stream = Mojo::IOLoop::Stream->new($read)->timeout(0);
   $stream->on(read => $cb);
   $stream->start;
-  $SIG{CHLD} = _signal_handler(CHLD => sub {
+  $SIG{CHLD} = _sigchld_handler(sub {
     Mojo::IOLoop->timer(0 => sub {
       syswrite $write, "1" or warn "failed to trigger SIGCHLD: $!";
     });
@@ -235,24 +235,24 @@ sub _sigchld {
   $self->emit(close => $exit_value, $signal);
 }
 
-sub _signal_handler {
-  my ($sig, $cb) = @_;
-  my $oldsig = $SIG{$sig};
-  my $oldsig_cb;
-  if (ref $oldsig eq 'CODE') {
-    $oldsig_cb = $oldsig;
+sub _sigchld_handler {
+  my $cb = shift;
+  my $sig = $SIG{CHLD};
+  my $sig_cb;
+  if (ref $sig eq 'CODE') {
+    $sig_cb = $sig;
   } elsif(
-    defined $oldsig and
-    $oldsig ne 'DEFAULT' and # SIGCHLD default is ignore
-    $oldsig ne 'IGNORE' and 
-    defined &$oldsig
+    defined $sig and
+    $sig ne 'DEFAULT' and # SIGCHLD default is ignore
+    $sig ne 'IGNORE' and 
+    defined &$sig
   ) {
     no strict 'refs';
-    $oldsig_cb = \&$oldsig if defined &$oldsig;
+    $sig_cb = \&$sig if defined &$sig;
   }
-  return $oldsig_cb ? sub {
+  return $sig_cb ? sub {
     $cb->(@_);
-    $oldsig_cb->(@_);
+    $sig_cb->(@_);
   } : $cb;
 }
 
@@ -267,10 +267,11 @@ sub _watch_pid {
   # https://github.com/jhthorsen/mojo-ioloop-readwritefork/issues/9
   # for details.
   if ($reactor->isa('Mojo::Reactor::EV')) {
-    $self->{ev_child} = EV::child($pid, 0, _signal_handler(CHLD => sub { _sigchld($self, $pid, $_[0]->rstatus); }));
+    Scalar::Util::weaken(my $self = $self);
+    $self->{ev_child} = EV::child($pid, 0, _sigchld_handler(sub { _sigchld($self, $pid, $_[0]->rstatus); }));
   }
   else {
-    $reactor->{fork_watcher} ||= $self->_sigchld_listener(sub { _watch_forks($reactor) });
+    $reactor->{fork_watcher} ||= _sigchld_listener(sub { _watch_forks($reactor) });
     Scalar::Util::weaken($reactor->{forks}{$pid} = $self);
   }
 }
